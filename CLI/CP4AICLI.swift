@@ -1,5 +1,6 @@
 import AppKit
 import CP4AICore
+import Darwin
 import Foundation
 
 public enum CP4AICLI {
@@ -55,6 +56,8 @@ public enum CP4AICLI {
             ocrLanguages: arguments.languages
         )
         let engine = ConversionEngine(options: options)
+        let reporter = CLIProgressReporter()
+        defer { reporter.finish() }
         let printer = OrderedFileProgress { _, _, source, details, error in
             if let error {
                 fputs("[\(source.lastPathComponent)] FAILED: \(error)\n", stderr)
@@ -63,7 +66,13 @@ public enum CP4AICLI {
             }
         }
         let progress: ProgressHandler = { event in
-            if case let .fileFinished(index, total, source, details, error) = event {
+            switch event {
+            case .work(let state):
+                reporter.work(state)
+            case .fileStarted(let index, let total, let source):
+                reporter.started(index: index, total: total, source: source)
+            case .fileFinished(let index, let total, let source, let details, let error):
+                reporter.clearLine()
                 printer.add(index: index, total: total, source: source, details: details, error: error)
             }
         }
@@ -123,6 +132,8 @@ public enum CP4AICLI {
             ocrLanguages: arguments.languages
         )
         let engine = ConversionEngine(options: options)
+        let reporter = CLIProgressReporter()
+        defer { reporter.finish() }
         let printer = OrderedFileProgress { index, total, source, details, error in
             if let error {
                 fputs("[\(index)/\(total)] FAILED \(source.path): \(error)\n", stderr)
@@ -131,7 +142,13 @@ public enum CP4AICLI {
             }
         }
         let progress: ProgressHandler = { event in
-            if case let .fileFinished(index, total, source, details, error) = event {
+            switch event {
+            case .work(let state):
+                reporter.work(state)
+            case .fileStarted(let index, let total, let source):
+                reporter.started(index: index, total: total, source: source)
+            case .fileFinished(let index, let total, let source, let details, let error):
+                reporter.clearLine()
                 printer.add(index: index, total: total, source: source, details: details, error: error)
             }
         }
@@ -424,5 +441,68 @@ private final class OrderedFileProgress {
             emit(next, total, entry.source, entry.details, entry.error)
             next += 1
         }
+    }
+}
+
+/// Live terminal feedback while extraction/OCR jobs are running.
+private final class CLIProgressReporter {
+    private let lock = NSLock()
+    private let tty = isatty(STDERR_FILENO) != 0
+    private var lastUpdate = Date.distantPast
+    private var lastDocumentsDone = -1
+    private var lineActive = false
+
+    func started(index: Int, total: Int, source: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        clearLineLocked()
+        write("[working] \(source.lastPathComponent)\n")
+    }
+
+    func work(_ state: WorkState) {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        let documentsChanged = state.documentsDone != lastDocumentsDone
+        guard tty || documentsChanged || now.timeIntervalSince(lastUpdate) >= 1.0 else { return }
+        lastUpdate = now
+        lastDocumentsDone = state.documentsDone
+        var line = "Progress: \(state.documentsDone)/\(state.documentsTotal) documents"
+        if state.imagesTotal > 0 || state.imagesDone > 0 {
+            line += " + \(state.imagesDone)/\(state.imagesTotal) images"
+        }
+        if tty {
+            write("\r\u{001B}[2K" + line)
+            lineActive = true
+        } else {
+            write(line + "\n")
+        }
+    }
+
+    func clearLine() {
+        lock.lock()
+        defer { lock.unlock() }
+        clearLineLocked()
+    }
+
+    func finish() {
+        lock.lock()
+        defer { lock.unlock() }
+        if lineActive {
+            clearLineLocked()
+            write("\n")
+        }
+    }
+
+    private func clearLineLocked() {
+        if lineActive {
+            write("\r\u{001B}[2K")
+            lineActive = false
+        }
+    }
+
+    private func write(_ text: String) {
+        guard let data = text.data(using: .utf8) else { return }
+        FileHandle.standardError.write(data)
     }
 }

@@ -11,6 +11,8 @@ public final class PptxPostProcessor {
     private let renderer: VectorRenderer
     private let useOCR: Bool
     private let onOCR: OCRHandler?
+    private var preloadedText: [String: String] = [:]
+    private let preloadedLock = NSLock()
 
     public init(
         mediaDir: URL,
@@ -59,8 +61,9 @@ public final class PptxPostProcessor {
             } else {
                 text = ocrImageFile(imagePath)
                 onOCR?()
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    note = "<!-- image omitted: \(label) (no readable text detected) -->"
+                if !TextTools.usefulOCR(text) {
+                    text = ""
+                    return ""
                 }
             }
 
@@ -117,6 +120,32 @@ public final class PptxPostProcessor {
         return pieces.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Collect the images referenced by the slide Markdown.
+    public func collectImageURLs(in markdown: String) -> [URL] {
+        guard let regex = RegexTools.compile(Self.imagePattern) else { return [] }
+        var urls: [URL] = []
+        var seen = Set<String>()
+        let ns = markdown as NSString
+        for match in regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
+            let source = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces)
+            let path = resolve(source: source)
+            guard FileManager.default.fileExists(atPath: path.path) else { continue }
+            if seen.insert(path.standardizedFileURL.path).inserted {
+                urls.append(path)
+            }
+        }
+        return urls
+    }
+
+    /// Run the OCR for one slide image and put the result in the shared cache.
+    public func preload(_ image: URL) {
+        let key = image.standardizedFileURL.path
+        let text = ocrImageFile(image)
+        preloadedLock.lock()
+        preloadedText[key] = text
+        preloadedLock.unlock()
+    }
+
     public func splitSlides(_ markdown: String) -> (preamble: String, chunks: [String]) {
         let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let regex = RegexTools.compile("(?m)^## ") else {
@@ -153,6 +182,14 @@ public final class PptxPostProcessor {
     }
 
     private func ocrImageFile(_ image: URL) -> String {
+        let key = image.standardizedFileURL.path
+        preloadedLock.lock()
+        if let cached = preloadedText[key] {
+            preloadedLock.unlock()
+            return cached
+        }
+        preloadedLock.unlock()
+
         let suffix = "." + image.pathExtension.lowercased()
         if DocxImageProcessor.vectorSuffixes.contains(suffix) {
             let png = workdir.appendingPathComponent("pptx_vector_\(UUID().uuidString).png")

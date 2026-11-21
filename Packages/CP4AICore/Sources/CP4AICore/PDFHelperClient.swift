@@ -1,16 +1,20 @@
 import Foundation
 
-public struct PDFRegion: Decodable {
+public struct PDFImagePlacement: Decodable {
     public let file: String
     public let bbox: [Double]
     public let sha256: String
+    public let kind: String
+    public let width: Int
+    public let height: Int
 }
 
 public struct PDFPage: Decodable {
     public let number: Int
     public let markdown: String
-    public let foreground: [PDFRegion]
-    public let background: [PDFRegion]
+    public let width: Double
+    public let height: Double
+    public let images: [PDFImagePlacement]
 }
 
 public struct PDFDocument: Decodable {
@@ -22,8 +26,7 @@ public struct PDFDocument: Decodable {
 
 public struct PDFProbePage: Decodable {
     public let number: Int
-    public let foreground: Int
-    public let background: Int
+    public let images: Int
 }
 
 public struct PDFProbe: Decodable {
@@ -44,7 +47,7 @@ public final class PDFHelperClient {
     public func probe(_ url: URL) throws -> PDFProbe {
         let output = try run(["probe", "--input", url.standardizedFileURL.path])
         let probe = try decode(PDFProbe.self, from: output)
-        guard probe.schema == 1 else {
+        guard probe.schema == 2 else {
             throw ConversionError.invalidDocument("unsupported PDF helper schema: \(probe.schema)")
         }
         return probe
@@ -57,7 +60,7 @@ public final class PDFHelperClient {
             "--output", output.path,
         ])
         let document = try decode(PDFDocument.self, from: result)
-        guard document.schema == 1 else {
+        guard document.schema == 2 else {
             throw ConversionError.invalidDocument("unsupported PDF helper schema: \(document.schema)")
         }
         return document

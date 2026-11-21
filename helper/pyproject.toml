@@ -1,6 +1,6 @@
 [project]
 name = "cp4ai-pdf-helper"
-version = "3.1.0"
+version = "3.2.0"
 description = "PDF text extraction and OCR-region rasterisation for Copy 4 AI"
 requires-python = ">=3.13,<3.14"
 dependencies = [

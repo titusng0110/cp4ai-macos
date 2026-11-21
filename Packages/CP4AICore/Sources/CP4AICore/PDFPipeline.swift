@@ -29,27 +29,68 @@ public final class PDFPipeline {
     public func convert(_ source: URL, to output: URL) throws -> String {
         let regions = try TemporaryDirectory(prefix: "cp4ai_pdf_")
         let document = try helper.extract(source, output: regions.url)
+        return try convert(
+            document: document,
+            regionsDirectory: regions.url,
+            source: source,
+            to: output
+        )
+    }
+
+    /// Assemble a PDF from an already-extracted helper document.
+    public func convert(
+        document: PDFDocument,
+        regionsDirectory: URL,
+        source: URL,
+        to output: URL
+    ) throws -> String {
         let total = document.pages.count
         var parts: [String] = []
         var ocrPages = 0
 
         for (index, page) in document.pages.enumerated() {
             let native = TextTools.clean(page.markdown)
-            var ocrText = ""
+            var blocks: [String] = []
+
             if useOCR {
-                ocrText = ocrPage(page, outputDirectory: regions.url, nativeText: native)
-                if !ocrText.isEmpty,
-                   TextTools.isOrderedSubsequenceAfterStrippingWhitespace(ocrText, of: native) {
-                    ocrText = ""
+                for image in page.images {
+                    let file = regionsDirectory.appendingPathComponent(image.file)
+                    let text: String
+                    if let cached = cache.text(for: image.sha256) {
+                        text = cached
+                    } else {
+                        text = (try? ocr.recognize(imageAt: file)) ?? ""
+                        cache.store(text, for: image.sha256)
+                    }
+                    onOCR?()
+
+                    guard TextTools.usefulOCR(text) else { continue }
+                    guard !TextTools.isOrderedSubsequenceAfterStrippingWhitespace(text, of: native) else {
+                        continue
+                    }
+                    blocks.append(
+                        blockquote(
+                            text: text,
+                            label: image.kind == "page" ? "full page" : "image",
+                            position: positionText(
+                                bbox: image.bbox,
+                                pageWidth: page.width,
+                                pageHeight: page.height
+                            )
+                        )
+                    )
                 }
             }
-            if !ocrText.isEmpty { ocrPages += 1 }
 
+            if !blocks.isEmpty { ocrPages += 1 }
             var body = native
-            if !ocrText.isEmpty {
-                body += "\n\n\(Self.ocrComment)\n\n\(ocrText)"
+            if !blocks.isEmpty {
+                let ocr = Self.ocrComment + "\n\n" + blocks.joined(separator: "\n\n")
+                body = body.isEmpty ? ocr : body + "\n\n" + ocr
             }
-            parts.append("<!-- page \(index + 1) of \(total) -->\n\n\(body.trimmingCharacters(in: .whitespacesAndNewlines))")
+            parts.append(
+                "<!-- page \(index + 1) of \(total) -->\n\n\(body.trimmingCharacters(in: .whitespacesAndNewlines))"
+            )
             onPage?()
         }
 
@@ -72,37 +113,24 @@ public final class PDFPipeline {
         return "pdf, \(total) pages, OCR on \(ocrPages) page(s)"
     }
 
-    private func ocrPage(_ page: PDFPage, outputDirectory: URL, nativeText: String) -> String {
-        let nativeTokens = TextTools.tokenSet(nativeText).count
-        var regions = ocrRegions(page.foreground, outputDirectory: outputDirectory)
-
-        if !page.foreground.isEmpty {
-            let ocrTokens = TextTools.tokenSet(regions.joined(separator: "\n")).count
-            if nativeTokens < 40, ocrTokens < 20, !page.background.isEmpty {
-                regions = ocrRegions(page.background, outputDirectory: outputDirectory)
-            }
-        } else if !page.background.isEmpty, nativeTokens < 40 {
-            regions = ocrRegions(page.background, outputDirectory: outputDirectory)
-        }
-        return regions.joined(separator: "\n\n")
+    private func blockquote(text: String, label: String, position: String) -> String {
+        let heading = position.isEmpty
+            ? "> **Image text (OCR) — \(label)**"
+            : "> **Image text (OCR) — \(label) — \(position)**"
+        var lines = [heading, ">"]
+        lines.append(contentsOf: text.components(separatedBy: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces).isEmpty ? ">" : "> \($0)"
+        })
+        return lines.joined(separator: "\n")
     }
 
-    private func ocrRegions(_ regions: [PDFRegion], outputDirectory: URL) -> [String] {
-        var results: [String] = []
-        for region in regions {
-            let file = outputDirectory.appendingPathComponent(region.file)
-            let text: String
-            if let cached = cache.text(for: region.sha256) {
-                text = cached
-            } else {
-                text = (try? ocr.recognize(imageAt: file)) ?? ""
-                cache.store(text, for: region.sha256)
-            }
-            onOCR?()
-            if !text.isEmpty, TextTools.usefulOCR(text) {
-                results.append(text)
-            }
-        }
-        return results
+    private func positionText(bbox: [Double], pageWidth: Double, pageHeight: Double) -> String {
+        guard bbox.count == 4, pageWidth > 0, pageHeight > 0 else { return "" }
+        let top = Int((bbox[1] / pageHeight * 100).rounded())
+        let left = Int((bbox[0] / pageWidth * 100).rounded())
+        let width = Int(((bbox[2] - bbox[0]) / pageWidth * 100).rounded())
+        let height = Int(((bbox[3] - bbox[1]) / pageHeight * 100).rounded())
+        return "[top: \(max(0, min(100, top)))%, left: \(max(0, min(100, left)))%, "
+            + "width: \(max(0, min(100, width)))%, height: \(max(0, min(100, height)))%]"
     }
 }

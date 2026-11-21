@@ -83,10 +83,10 @@ final class ProgressController: NSObject, NSWindowDelegate {
     func updateWork(_ state: WorkState) {
         setIndeterminate(false)
         bar.doubleValue = state.fraction * 100
-        if state.pagesTotal > 0 {
-            var text = "\(state.pagesDone)/\(state.pagesTotal) pages"
-            if state.ocrTotal > 0 || state.ocrDone > 0 {
-                text += " + \(state.ocrDone)/\(state.ocrTotal) OCR"
+        if state.documentsTotal > 0 {
+            var text = "\(state.documentsDone)/\(state.documentsTotal) documents"
+            if state.imagesTotal > 0 || state.imagesDone > 0 {
+                text += " + \(state.imagesDone)/\(state.imagesTotal) images"
             }
             statusLabel.stringValue = text
         } else {

@@ -74,22 +74,27 @@ public struct WorkTotals {
 }
 
 public struct WorkState {
-    public var pagesTotal: Int
-    public var ocrTotal: Int
-    public var pagesDone: Int
-    public var ocrDone: Int
+    public var documentsTotal: Int
+    public var documentsDone: Int
+    public var imagesTotal: Int
+    public var imagesDone: Int
 
-    public init(pagesTotal: Int, ocrTotal: Int, pagesDone: Int = 0, ocrDone: Int = 0) {
-        self.pagesTotal = pagesTotal
-        self.ocrTotal = ocrTotal
-        self.pagesDone = pagesDone
-        self.ocrDone = ocrDone
+    public init(
+        documentsTotal: Int,
+        imagesTotal: Int,
+        documentsDone: Int = 0,
+        imagesDone: Int = 0
+    ) {
+        self.documentsTotal = documentsTotal
+        self.documentsDone = documentsDone
+        self.imagesTotal = imagesTotal
+        self.imagesDone = imagesDone
     }
 
     public var fraction: Double {
-        let total = pagesTotal + ocrTotal
+        let total = documentsTotal + imagesTotal
         guard total > 0 else { return 0 }
-        return min(1.0, Double(pagesDone + ocrDone) / Double(total))
+        return min(1.0, Double(documentsDone + imagesDone) / Double(total))
     }
 }
 

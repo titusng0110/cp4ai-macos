@@ -21,6 +21,8 @@ public final class DocxImageProcessor {
     private let onOCR: OCRHandler?
 
     private var counter = 0
+    private var preloadedText: [String: String] = [:]
+    private let preloadedLock = NSLock()
     private var referenced = Set<String>()
     private var failedVectors: [URL] = []
 
@@ -116,11 +118,9 @@ public final class DocxImageProcessor {
 
         var figures: [(String, String)] = []
         var failed: [URL] = []
-        var index = 5000
         for file in files {
             if referenced.contains(file.standardizedFileURL.path) { continue }
-            index += 1
-            let text = ocrImageFile(file, index: index)
+            let text = ocrImageFile(file)
             onOCR?()
             if TextTools.usefulOCR(text) {
                 figures.append((file.lastPathComponent, text))
@@ -162,6 +162,68 @@ public final class DocxImageProcessor {
         failedVectors
     }
 
+    /// Collect every image that the final replacement pass may OCR, without
+    /// mutating the processor's replacement counters.
+    public func collectImageURLs(in markdown: String) -> [URL] {
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        func add(_ source: String) {
+            let path = resolve(source: source)
+            guard FileManager.default.fileExists(atPath: path.path) else { return }
+            if seen.insert(path.standardizedFileURL.path).inserted {
+                urls.append(path)
+            }
+        }
+
+        if let regex = RegexTools.compile(Self.imagePattern) {
+            let ns = markdown as NSString
+            for match in regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
+                add(ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        if let regex = RegexTools.compile(Self.htmlImagePattern, options: [.caseInsensitive]) {
+            let ns = markdown as NSString
+            for match in regex.matches(in: markdown, range: NSRange(location: 0, length: ns.length)) {
+                let tag = ns.substring(with: match.range)
+                if let source = firstGroup(Self.srcPattern, in: tag, group: 2) {
+                    add(source)
+                }
+            }
+        }
+        return urls
+    }
+
+    /// All image files extracted by Pandoc, including floating figures.
+    public func mediaImageURLs() -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: mediaDir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        var urls: [URL] = []
+        for case let file as URL in enumerator {
+            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                continue
+            }
+            if Self.imageSuffixes.contains("." + file.pathExtension.lowercased()) {
+                urls.append(file)
+            }
+        }
+        return urls
+    }
+
+    /// Run the OCR for one image and put the result in the shared cache.
+    public func preload(_ image: URL) {
+        let key = image.standardizedFileURL.path
+        let text = ocrImageFile(image)
+        preloadedLock.lock()
+        preloadedText[key] = text
+        preloadedLock.unlock()
+    }
+
     public func addFailedVectors(_ urls: [URL]) {
         failedVectors.append(contentsOf: urls)
         let unique = Dictionary(grouping: failedVectors, by: { $0.standardizedFileURL.path })
@@ -182,7 +244,7 @@ public final class DocxImageProcessor {
         guard useOCR else {
             return ("", label, "<!-- image omitted: \(label) (OCR disabled) -->")
         }
-        let text = ocrImageFile(imagePath, index: counter)
+        let text = ocrImageFile(imagePath)
         onOCR?()
         if TextTools.usefulOCR(text) {
             return (text, label, nil)
@@ -191,7 +253,8 @@ public final class DocxImageProcessor {
             failedVectors.append(imagePath)
             return ("", label, "<!-- vector image not OCR'd: \(label) -->")
         }
-        return ("", label, "<!-- image omitted: \(label) (no readable text detected) -->")
+        // Fewer than 10 non-whitespace characters: drop the image entirely.
+        return ("", label, "")
     }
 
     private func resolve(source: String) -> URL {
@@ -206,10 +269,18 @@ public final class DocxImageProcessor {
         return workdir.appendingPathComponent(cleaned).standardizedFileURL
     }
 
-    private func ocrImageFile(_ image: URL, index: Int) -> String {
+    private func ocrImageFile(_ image: URL) -> String {
+        let key = image.standardizedFileURL.path
+        preloadedLock.lock()
+        if let cached = preloadedText[key] {
+            preloadedLock.unlock()
+            return cached
+        }
+        preloadedLock.unlock()
+
         let suffix = "." + image.pathExtension.lowercased()
         if Self.vectorSuffixes.contains(suffix) {
-            let png = workdir.appendingPathComponent("vector_\(index).png")
+            let png = workdir.appendingPathComponent("vector_\(UUID().uuidString).png")
             guard renderer.vectorToPNG(image, outPNG: png, workdir: workdir) else { return "" }
             return ocrImageCached(png)
         }
